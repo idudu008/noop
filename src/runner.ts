@@ -377,10 +377,17 @@ function repairJson(json: string): string {
  * `[router] cli/model` in config.toml puts one first; the others are fallbacks when its CLI is missing or fails. */
 const ROUTERS = [{ cli: "claude", model: "claude-haiku-5-5" }, { cli: "codex", model: "gpt-6-luna" }];
 
+/** A configured router normally falls back to the other CLI. A Codex-only host can explicitly disable that
+ * fallback so merely having another executable on PATH never changes providers after a transient failure. */
+export function routerCandidates(cfg: Cfg): { cli: string; model: string }[] {
+  const own = cfg.router?.cli ? [{ cli: String(cfg.router.cli), model: String(cfg.router.model ?? "") }] : [];
+  if (own.length && cfg.router?.fallback === false) return own;
+  return [...own, ...ROUTERS.filter((x) => x.cli !== own[0]?.cli)];
+}
+
 /** One quick structured call for routing (the fastest model available); null when none answered. */
 export async function quickAsk(prompt: string, cfg: Cfg, logFile: string): Promise<any> {
-  const own = cfg.router?.cli ? [{ cli: String(cfg.router.cli), model: String(cfg.router.model ?? "") }] : [];
-  for (const r of [...own, ...ROUTERS.filter((x) => x.cli !== own[0]?.cli)]) {
+  for (const r of routerCandidates(cfg)) {
     if (!Bun.which(r.cli)) continue;
     const cmd = r.cli === "claude"
       ? ["claude", "-p", "--output-format", "text", "--tools", "", "--strict-mcp-config", ...(r.model ? ["--model", r.model] : [])]

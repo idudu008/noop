@@ -790,7 +790,7 @@ async function planNow(cfg: Cfg, host: string) {
   // the owner's per-member CLI policy (Settings → Members → clis.agents): the planner suggests, it may not override it
   const fixed = new Map<string, string[]>();
   for (const t of todo) {
-    const a = t.meta.agent || "lead", per = cfg.clis?.agents?.[a];
+    const a = t.meta.agent || "lead", per = cfg.clis?.agents?.[a] ?? cfg.clis?.preference;
     if (Array.isArray(per) && per.length) fixed.set(a, per);
   }
   const r = await quickAsk(`You place tasks for an AI agent fleet running on several machines.

@@ -3,7 +3,8 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "no
 import { tmpdir } from "node:os";
 import { checkpointFallback, checkpointRecoveryBody, due, recordRunLimit } from "../src/cli";
 import { claimPolicyAllows, matches, signature, type Cfg } from "../src/core";
-import { RUN_LIMIT, cliCommand, deadlinePrompt, parseResult, runAgent, runLimits, stripImages } from "../src/runner";
+import { RUN_LIMIT, cliCommand, deadlinePrompt, parseResult, routerCandidates, runAgent, runLimits, stripImages } from "../src/runner";
+import { medicCli } from "../src/medic";
 import { tooManyWakes } from "../src/waits";
 
 test("routine schedule", () => {
@@ -34,6 +35,13 @@ test("pinned-only hosts claim only work explicitly addressed to themselves", () 
   expect(claimPolicyAllows({ host: "mac" }, cfg)).toBe(false);
   expect(claimPolicyAllows({ requires: "os:linux,cli:codex" }, cfg)).toBe(false);
   expect(claimPolicyAllows({}, { host: { name: "darcy" } } as Cfg)).toBe(true);
+});
+
+test("Codex-only infrastructure settings do not fall back to an installed Claude executable", () => {
+  expect(routerCandidates({ router: { cli: "codex", model: "gpt-test", fallback: false } } as Cfg))
+    .toEqual([{ cli: "codex", model: "gpt-test" }]);
+  expect(medicCli({ medic: { cli: "codex" } } as Cfg, () => true)).toBe("codex");
+  expect(medicCli({ clis: { preference: ["codex"] } } as Cfg, () => true)).toBe("codex");
 });
 
 test("external signature links the Noop name to its site", () => {

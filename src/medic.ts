@@ -50,6 +50,14 @@ ${ctx}
 
 End with one \`\`\`json block: {"fixed": true|false, "summary": "...", "owner_action": "command or empty", "pr": "url or empty"}`;
 
+/** Pick the medic provider from its explicit setting, then the host-wide CLI policy, then the legacy order. */
+export function medicCli(cfg: Cfg, installed: (cli: string) => boolean = (cli) => !!Bun.which(cli)): string | null {
+  const fixed = cfg.medic?.cli ? [String(cfg.medic.cli)] : null;
+  const preferred = Array.isArray(cfg.clis?.preference) && cfg.clis.preference.length
+    ? cfg.clis.preference.map(String) : ["claude", "codex"];
+  return (fixed ?? preferred).find(installed) ?? null;
+}
+
 /** Run the medic. `auto` = triggered by a failure (rate-limited to once per hour per problem kind). */
 export async function medic(problem: string, cfg: Cfg, opts: { auto?: boolean; kind?: string } = {}) {
   if (process.env.HUB_NO_MEDIC || cfg.medic?.enabled === false) return null;
@@ -60,7 +68,7 @@ export async function medic(problem: string, cfg: Cfg, opts: { auto?: boolean; k
   mkdirSync(LOGDIR, { recursive: true });
   writeFileSync(STATE, JSON.stringify(state));
 
-  const cli = ["claude", "codex"].find((c) => Bun.which(c));
+  const cli = medicCli(cfg);
   if (!cli) { console.error("medic: neither claude nor codex is installed"); return null; }
   const prompt = PROMPT(problem, await context(), cfg.medic?.push !== false);
   const cmd = cli === "claude"

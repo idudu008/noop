@@ -10,6 +10,14 @@ test("the owner's per-member CLI wins over the planner's hint", () => {
   expect(allowedClis({ agent: "lead", cli: "auto", cli_hint: "claude" }, cfg({ lead: ["codex"] }))).toEqual(["codex"]);
 });
 
+test("the host-wide CLI policy wins over the planner's hint when a member has no override", () => {
+  expect(allowedClis({ agent: "lead", cli: "auto", cli_hint: "claude" }, { clis: { preference: ["codex"] } } as any)).toEqual(["codex"]);
+});
+
+test("a member policy remains stronger than the host-wide CLI policy", () => {
+  expect(allowedClis({ agent: "lead", cli: "auto" }, { clis: { preference: ["codex"], agents: { lead: ["claude"] } } } as any)).toEqual(["claude"]);
+});
+
 test("a CLI pinned on the task itself still wins over the member config", () => {
   expect(allowedClis({ agent: "lead", cli: "claude" }, cfg({ lead: ["codex"] }))).toEqual(["claude"]);
 });
