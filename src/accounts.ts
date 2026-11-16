@@ -82,7 +82,10 @@ export function failoverAccount(cfg: Cfg, failed: Account | null, wanted: string
   const same = failed ? [failed.cli] : wanted;
   const first = same.filter(installed);
   for (const cli of first) for (const a of accounts(cfg, cli)) if (usable(a) && !(failed && key(a) === key(failed))) return a;
-  const others = [...new Set(same.map((c) => OTHER_CLI[c]).filter((c) => c && !first.includes(c) && installed(c)))];
+  const policy = Array.isArray(cfg.clis?.preference) && cfg.clis.preference.length
+    ? new Set(cfg.clis.preference.map(String)) : null;
+  const others = [...new Set(same.map((c) => OTHER_CLI[c])
+    .filter((c) => c && (!policy || policy.has(c)) && !first.includes(c) && installed(c)))];
   return pickAccount(cfg, others);
 }
 

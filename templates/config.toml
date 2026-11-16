@@ -34,7 +34,7 @@ stale_repo_days = 7                   # target/ of repos (and, on macOS, Xcode D
 [clis]
 # Which CLI runs a task, strongest first: a `cli` pinned on the task (`noop add --cli …`, a routine's cli) > the
 # owner's per-member config below (Settings → Members) > host-wide preference > the planner's per-task suggestion
-# > either, Claude first. Set preference = ["codex"] for a Codex-only host.
+# > either, Claude first. The preference list also bounds cross-CLI failover; set ["codex"] for a Codex-only host.
 # preference = ["claude", "codex"]
 # Claude Opus = challenging work (development, debugging, architecture, UI, judge, learning, evolution).
 # Codex (ChatGPT) = routine work. The planner only suggests, so it can never override a member pinned here.

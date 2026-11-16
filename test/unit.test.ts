@@ -200,6 +200,8 @@ test("quota/auth failover: same CLI's other account, then the other CLI, else no
   expect(failoverAccount(solo, a, ["claude"], all)?.cli).toBe("codex"); // claude-only (owner/hard) work still falls back
   expect(failoverAccount(solo, a, ["claude"], (c) => c === "claude")).toBeNull(); // codex not installed → requeue
   expect(failoverAccount(solo, { cli: "codex", name: "zz-test-c", dir: "" }, ["codex", "claude"], all)?.cli).toBe("claude");
+  const strict = { ...solo, clis: { preference: ["codex"] } } as any;
+  expect(failoverAccount(strict, { cli: "codex", name: "zz-test-c", dir: "" }, ["codex"], all)).toBeNull();
 });
 
 test("classify: OpenAI 'no credits remaining' is a quota wall, so codex work falls back", async () => {
