@@ -17,6 +17,7 @@ check_minutes = 30                    # self-update framework code (git ff + bun
 [host]
 tick_seconds = 60
 # max_parallel = 8                    # concurrent agents; default = cores/3 (min 2), then throttled by the resource governor
+# claim_policy = "pinned-only"        # control-plane host: only claim tasks explicitly pinned to this host
 caps = []                             # extra capability tags, e.g. ["gpu", "docker", "home-lan"]
 
 [resources]
@@ -80,6 +81,11 @@ timeout_minutes = 30
 enabled = true
 cli = "claude"
 model = "claude-opus-5-5"
+
+[brain]                               # primary chat; command must speak Claude's stream-json protocol
+# cli = "claude"                     # may be a compatibility bridge to another model CLI
+# model = "claude-haiku-5-5"
+# timeout_seconds = 45
 
 [tunnel]                              # Cloudflare Tunnel → public HTTPS for the client, no LAN/VPN needed
 mode = "quick"                        # quick (no account, URL changes on restart) | named (stable: `cloudflared tunnel login` once) | off

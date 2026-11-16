@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { checkpointFallback, checkpointRecoveryBody, due, recordRunLimit } from "../src/cli";
-import { matches, signature, type Cfg } from "../src/core";
+import { claimPolicyAllows, matches, signature, type Cfg } from "../src/core";
 import { RUN_LIMIT, cliCommand, deadlinePrompt, parseResult, runAgent, runLimits, stripImages } from "../src/runner";
 import { tooManyWakes } from "../src/waits";
 
@@ -23,6 +23,17 @@ test("capability matching", () => {
   expect(matches({ requires: "os:macos" }, caps)).toBe(false);
   expect(matches({ host: "pc", requires: "gpu" }, caps)).toBe(true);
   expect(matches({ host: "mbp" }, caps)).toBe(false);
+});
+
+test("pinned-only hosts claim only work explicitly addressed to themselves", () => {
+  const cfg = { host: { name: "darcy", claim_policy: "pinned-only" } } as Cfg;
+  expect(claimPolicyAllows({ host: "darcy" }, cfg)).toBe(true);
+  expect(claimPolicyAllows({ requires: "os:linux,host:darcy" }, cfg)).toBe(true);
+  expect(claimPolicyAllows({ requires: "host:backup|host:darcy" }, cfg)).toBe(true);
+  expect(claimPolicyAllows({}, cfg)).toBe(false);
+  expect(claimPolicyAllows({ host: "mac" }, cfg)).toBe(false);
+  expect(claimPolicyAllows({ requires: "os:linux,cli:codex" }, cfg)).toBe(false);
+  expect(claimPolicyAllows({}, { host: { name: "darcy" } } as Cfg)).toBe(true);
 });
 
 test("external signature links the Noop name to its site", () => {

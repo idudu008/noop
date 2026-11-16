@@ -2,7 +2,7 @@
 import { expect, test } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { type Model, addFollowUp, context, dataActs, localStore, reopenTask, parseTurn, think } from "../src/brain";
+import { type Model, addFollowUp, brainModelSettings, context, dataActs, localStore, reopenTask, parseTurn, think } from "../src/brain";
 import { type Cfg, DATA, readDoc } from "../src/core";
 import { claudeDisallowed } from "../src/gates";
 import { runTool, taskInfo, toolsFor, TOOLS, type WriteOp, listRoutines } from "../cloud/src/tools";
@@ -29,6 +29,13 @@ function store() {
   });
   return { st, did };
 }
+
+test("brain settings are independent from the one-shot router, with a compatibility fallback", () => {
+  expect(brainModelSettings({ brain: { cli: "/opt/brain-bridge", model: "brain-model", timeout_seconds: 90 }, router: { cli: "codex", model: "router-model", timeout_seconds: 30 } } as Cfg))
+    .toEqual({ cli: "/opt/brain-bridge", model: "brain-model", timeoutMs: 90_000 });
+  expect(brainModelSettings({ router: { cli: "/opt/legacy-bridge", model: "legacy-model", timeout_seconds: 60 } } as Cfg))
+    .toEqual({ cli: "/opt/legacy-bridge", model: "legacy-model", timeoutMs: 60_000 });
+});
 
 test("tool list: one list, MCP and brain views differ only by transport-bound tools", () => {
   const mcp = toolsFor("mcp").map((t) => t.name), brain = toolsFor("brain").map((t) => t.name);

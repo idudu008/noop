@@ -1,5 +1,5 @@
 // Chat brain: the owner's main channel, ChatGPT-style. Every owner message that isn't a bare decision answer ("D-0012 A")
-// goes to a fast model (Claude Haiku via the local `claude` CLI, on the primary daemon) that runs a short agent loop over
+// goes to a fast model (a Claude stream-json-compatible CLI on the primary daemon) that runs a short agent loop over
 // noop's own tools (cloud/src/tools.ts — the same tools the MCP server offers): it can answer directly, look things up,
 // create/amend/cancel/reprioritise/reassign tasks, answer decisions and write memory. No canned replies: when it has
 // nothing useful to say it posts nothing.
@@ -11,7 +11,7 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statS
 import { channelPrompt } from "./channels";
 import { homedir } from "node:os";
 import { join, relative } from "node:path";
-import { DATA, HOME_DIR, L, P, loadConfig, _commitPush, _pull, journal, locked, now, readDoc, writeDoc } from "./core";
+import { type Cfg, DATA, HOME_DIR, L, P, loadConfig, _commitPush, _pull, journal, locked, now, readDoc, writeDoc } from "./core";
 import { type Ev, type FileRow, type ToolStore, type WriteOp, isWrite, listDecisions, listRoutines, listTasks, editMemoryEntry, runTool, toolsFor, writeOp } from "../cloud/src/tools";
 
 // ---------------------------------------------------------------- the local tool store (the data repo on this machine)
@@ -118,6 +118,17 @@ export function dataActs(host: string, io = { pull: _pull, push: _commitPush }):
 export interface Model {
   /** One conversation: send a user turn, get the assistant's text. close() when done. */
   open(system: string): Promise<{ send(text: string): Promise<string>; close(): void }>;
+}
+
+/** Chat brain has a stateful stream protocol, unlike the one-shot router and judge. Keep its command independently
+ * configurable while falling back to the old [router] settings so existing bridge deployments keep working. */
+export function brainModelSettings(cfg: Cfg) {
+  const brain = cfg.brain ?? {}, legacy = cfg.router ?? {};
+  return {
+    model: String(brain.model ?? legacy.model ?? "claude-haiku-5-5"),
+    cli: String(brain.cli ?? legacy.cli ?? "claude"),
+    timeoutMs: Number(brain.timeout_seconds ?? legacy.timeout_seconds ?? 45) * 1000,
+  };
 }
 
 const BRAIN_DIR = join(HOME_DIR, "brain"); // empty cwd: no project CLAUDE.md, no repo context for the CLI to load

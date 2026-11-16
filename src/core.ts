@@ -329,6 +329,13 @@ export function onlineHosts(cfg: Cfg): HostBeat[] {
 
 const reqList = (s?: string) => (s ?? "").split(",").map((x) => x.trim()).filter(Boolean);
 
+/** A control-plane host may opt out of the general work pool while still accepting work explicitly pinned to it. */
+export function claimPolicyAllows(meta: Record<string, string>, cfg: Cfg): boolean {
+  if (cfg.host?.claim_policy !== "pinned-only") return true;
+  const target = `host:${hostName(cfg)}`;
+  return meta.host === hostName(cfg) || reqList(meta.requires).some((r) => r.split("|").map((x) => x.trim()).includes(target));
+}
+
 /** Should this host leave the task for a preferred, currently-online host? */
 function yieldToPreferred(meta: Record<string, string>, caps: string[], cfg: Cfg): boolean {
   const prefer = reqList(meta.prefer);
@@ -356,7 +363,7 @@ export function pickTask(cfg: Cfg, myLoad = 0, heavyOk = true): string | null {
   const cands = list(P("tasks", "inbox"), /^T-.*\.md$/)
     .map((p) => ({ p, m: readDoc(p).meta }))
     // the planner decides where a task runs first; unplanned tasks wait for it (at most plan_wait_minutes)
-    .filter(({ m }) => (m.planned || Date.now() - Date.parse(m.created ?? "") > (cfg.fleet?.plan_wait_minutes ?? 3) * 60_000) && matches(m, caps) && chooseCli(m, cfg) && !yieldToPreferred(m, caps, cfg) && !yieldHeavy(m, cfg, myLoad, heavyOk))
+    .filter(({ m }) => (m.planned || Date.now() - Date.parse(m.created ?? "") > (cfg.fleet?.plan_wait_minutes ?? 3) * 60_000) && claimPolicyAllows(m, cfg) && matches(m, caps) && chooseCli(m, cfg) && !yieldToPreferred(m, caps, cfg) && !yieldHeavy(m, cfg, myLoad, heavyOk))
     .sort((a, b) => (rank[a.m.priority] ?? 2) - (rank[b.m.priority] ?? 2) || a.p.localeCompare(b.p));
   return cands[0]?.p ?? null;
 }

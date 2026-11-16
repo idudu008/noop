@@ -25,7 +25,7 @@ import { medic } from "./medic";
 import { githubStarved } from "./github";
 import { doctor, visual } from "./visual";
 import { answerFromChat, appendEvent, cancelTask, drainInbound, feed, handleOwnerMessage, mediaDays, pruneMedia, recentChat, setApplyOp, setCancelTask, setUpdateFleet, onSettingsSaved, startServer, status as hubStatus } from "./server";
-import { addFollowUp, reopenTask, routeWithoutModel, type BrainOut, ClaudeModel, systemPrompt, dataActs, localStore, logBrain, think } from "./brain";
+import { addFollowUp, reopenTask, routeWithoutModel, type BrainOut, brainModelSettings, ClaudeModel, systemPrompt, dataActs, localStore, logBrain, think } from "./brain";
 import { isWrite, runTool } from "../cloud/src/tools";
 import { cloudDeploy, startCloudBridge } from "./cloud";
 import { adoptCloudUrl, readHubToml } from "./sync";
@@ -838,7 +838,7 @@ Reply with exactly one fenced json block: {"<task id>": {"requires": "", "cli": 
 async function daemon(cfg: Cfg) {
   const host = hostName(cfg);
   const every = (cfg.host?.tick_seconds ?? 60) * 1000;
-  console.log(`hub daemon on ${host} caps=${hostCaps(cfg).join(",")} tick=${every / 1000}s parallel≤${cfg.host?.max_parallel ?? "cores/3"}`);
+  console.log(`hub daemon on ${host} caps=${hostCaps(cfg).join(",")} tick=${every / 1000}s parallel≤${cfg.host?.max_parallel ?? "cores/3"} claim=${cfg.host?.claim_policy ?? "all"}`);
   onSettingsSaved((summary) => locked(async () => {
     await _pull();
     journal(host, `⚙️ owner changed settings: ${summary}`);
@@ -956,8 +956,9 @@ async function daemon(cfg: Cfg) {
     },
   });
   setApplyOp((op) => runTool(store, op?.tool, op));
-  const model = new ClaudeModel(String(cfg.router?.model ?? "claude-haiku-5-5"), String(cfg.router?.cli ?? "claude"), (cfg.router?.timeout_seconds ?? 45) * 1000);
-  if (isPrimary(cfg, host) && Bun.which(String(cfg.router?.cli ?? "claude"))) model.warm(systemPrompt());
+  const brain = brainModelSettings(cfg);
+  const model = new ClaudeModel(brain.model, brain.cli, brain.timeoutMs);
+  if (isPrimary(cfg, host) && Bun.which(brain.cli)) model.warm(systemPrompt());
   if (isPrimary(cfg, host)) startServer(cfg, async (text, { reply, answered, sentAt, thread, channel }) => {
     const got = Date.now();
     const room = channel ? channels().find((c) => c.slug === channel) : undefined;
@@ -997,7 +998,7 @@ async function daemon(cfg: Cfg) {
     }
     await _commitPush(`[${host}] recover`);
   });
-  await locked(async () => { await _pull(); journal(host, `🟢 daemon started (${hostCaps(cfg).join(", ")})`); await _commitPush(`[${host}] up`); });
+  await locked(async () => { await _pull(); journal(host, `🟢 daemon started (${hostCaps(cfg).join(", ")}; claim=${cfg.host?.claim_policy ?? "all"})`); await _commitPush(`[${host}] up`); });
   for (const sig of ["SIGTERM", "SIGINT"] as const) process.on(sig, () => void drainAndExit("stop", host));
   // a stray rejection (a voided notify/medic) used to kill the process → systemd restart → running work requeued
   process.on("unhandledRejection", (e) => console.error("unhandled rejection", e));
