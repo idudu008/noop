@@ -11,6 +11,7 @@ import {
 import { amendDecision, closeDecision, IGNORE, ignoreDecision, openDecision, overrideJudge, ownerPickedMenu, recentJudgeIds, routeDecision } from "./decisions";
 import { notify, openDecisionIds, pollReplies } from "./notify";
 import { RUN_LIMIT, STALLED, type Result, agentProcs, ask, buildPrompt, parseResult, quickAsk, runAgent, runLimits } from "./runner";
+import { computerUseRecovery, parseComputerUseTrace, validateComputerUseRecovery } from "./computer-use";
 import { writeRules } from "./rules";
 import { backoffMinutes, CHECKED_FALLBACK_MIN, isNoChangeRoutine, MAX_WAKES, tooManyWakes, waitMeta } from "./waits";
 import { allowedParallel, budget, canRunHeavy, ensureDisk, pressureOf, sample } from "./resources";
@@ -162,6 +163,34 @@ async function processTask(path: string, cfg: Cfg, host: string) {
     out = await runAgent(cli, buildPrompt(meta, promptBody, cfg, b.note, limits), meta.repo || P(), workCfg, log, !!meta.gate_override,
       { ...b.env, ...accountEnv(acct) });
     if (cancelled.has(meta.id)) { cancelled.delete(meta.id); return; } // the owner cancelled it while it ran
+    const computerUseTrace = parseComputerUseTrace(out);
+    if (computerUseTrace?.stopped) {
+      const recovery = computerUseRecovery(meta, body, computerUseTrace);
+      if (recovery.action === "requeue") {
+        await locked(async () => {
+          const inbox = P("tasks", "inbox", `${meta.id}.md`);
+          if (!existsSync(inbox)) writeDoc(inbox, { ...meta, claimed_by: undefined,
+            status: undefined, finished: undefined, wake_at: undefined, wait_kind: undefined, waiting_on: undefined,
+            wait_check: undefined, wait_check_base: undefined, parked_at: undefined,
+            computer_use_recovery_attempts: String(recovery.attempt), computer_use_recovery_target: recovery.target,
+            requeue_note: recovery.note }, body);
+          if (existsSync(path)) unlinkSync(path);
+          journal(host, L(`🔁 ${meta.id} Computer Use stopped the turn; requeued once for ${recovery.target}`,
+            `🔁 ${meta.id} Computer Use 停止当前轮；已为 ${recovery.target} 安全重排一次`));
+          await _commitPush(`[${host}] ${meta.id} Computer Use stopped, fresh-turn recovery`);
+        });
+        return;
+      }
+      res = { status: "failed", summary: L(`Computer Use stopped the assistant turn; recovery failed closed: ${recovery.reason}`,
+        `Computer Use 已停止当前 assistant turn；安全恢复 fail closed：${recovery.reason}`) };
+      break;
+    }
+    const recoveryViolation = validateComputerUseRecovery(meta, computerUseTrace);
+    if (recoveryViolation) {
+      res = { status: "failed", summary: L(`Computer Use recovery failed closed: ${recoveryViolation}`,
+        `Computer Use 恢复 fail closed：${recoveryViolation}`) };
+      break;
+    }
     if (out.includes(RUN_LIMIT)) {
       const partial = parseResult(out.slice(0, out.indexOf(RUN_LIMIT)));
       if (partial.status !== "failed") { res = partial; break; }
