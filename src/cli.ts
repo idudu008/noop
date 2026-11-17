@@ -1075,7 +1075,7 @@ const HELP = `Noop — your own AI team
   noop update                 self-update framework now (also automatic in daemon)
   noop fix ["what is wrong"]  AI medic: diagnose & repair this install (auto-runs on install/update/daemon failures)
   noop doctor                 check dependencies (agents, gh, headless GUI tools)
-  noop visual …               headless display for GUI testing: start/run/shot/record/input/stop
+  noop visual …               observable GUI testing: start/run/observe/status/verify/shot/record/input/stop
 
   noop daemon                 run forever (tick every host.tick_seconds)
   noop tick                   one cycle: pull → routines → replies → judge → run tasks → push
