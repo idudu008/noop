@@ -7,6 +7,7 @@ import {
 } from "./core";
 import { claudeDisallowed } from "./gates";
 import { channelPrompt } from "./channels";
+import { appendComputerUseTrace, ComputerUseObserver } from "./computer-use";
 
 export type Result = {
   status: "done" | "needs_decision" | "failed" | "delegated" | "waiting";
@@ -159,7 +160,7 @@ export function cliCommand(cli: string, cfg: Cfg, gateOverride = false): string[
   }
   if (cli === "codex") {
     // non-interactive: workspace-write sandbox with network, never ask for approval
-    const cmd = ["codex", "exec", "--skip-git-repo-check", "--sandbox", "workspace-write",
+    const cmd = ["codex", "exec", "--skip-git-repo-check", "--sandbox", "workspace-write", "--json",
       "-c", 'approval_policy="never"', "-c", "sandbox_workspace_write.network_access=true"];
     for (const dir of codexWritableDirs(homedir(), cfg.resources?.work_dirs)) cmd.push("--add-dir", dir);
     if (c.model) cmd.push("-m", c.model);
@@ -232,9 +233,11 @@ export async function runAgent(cli: string, prompt: string, cwd: string, cfg: Cf
   void proc.exited.then(() => { if (tid && agentProcs.get(tid) === proc) agentProcs.delete(tid); });
 
   // what the agent is doing: every chunk of output is a sign of life; Claude's stream also names each step
-  const json = cmd.includes("stream-json");
+  const json = cmd.includes("stream-json") || cmd.includes("--json");
   const act = { at: Date.now(), step: undefined as string | undefined, steps: 0, model: startModel(cli, cmd, extraEnv.CODEX_HOME) };
   const inFlight = new Map<string, string>(); // tool_use id → tool name, until its result comes back
+  const seenItems = new Set<string>();
+  const computerUse = new ComputerUseObserver();
   let resultText: string | undefined, assistantText = "";
   const touch = () => {
     act.at = Date.now();
@@ -242,8 +245,19 @@ export async function runAgent(cli: string, prompt: string, cwd: string, cfg: Cf
   };
   touch();
   const onLine = (line: string) => {
+    computerUse.observe(line);
     let e: any;
     try { e = JSON.parse(line); } catch { return; }
+    if (e.type === "item.started" || e.type === "item.completed") {
+      const item = e.item ?? {};
+      if (item.id && !seenItems.has(item.id) && item.type !== "reasoning" && item.type !== "agent_message") {
+        seenItems.add(item.id); act.step = toolStep(item.type, item.arguments ?? item); act.steps++;
+      }
+      if (e.type === "item.started" && item.id) inFlight.set(item.id, item.type);
+      if (e.type === "item.completed" && item.id) inFlight.delete(item.id);
+      if (e.type === "item.completed" && item.type === "agent_message" && typeof item.text === "string") assistantText += item.text;
+      return;
+    }
     if (e.type === "system" && e.subtype === "init" && e.model) act.model = String(e.model);
     if (e.type === "assistant") {
       if (e.message?.model && !e.parent_tool_use_id) act.model = String(e.message.model);
@@ -301,8 +315,8 @@ export async function runAgent(cli: string, prompt: string, cwd: string, cfg: Cf
   const logged = json ? raw.split("\n").map(stripImages).join("\n") : raw;
   writeFileSync(logFile, `$ ${cmd.join(" ")}\n(exit ${code})\n\n${logged}\n\n[stderr]\n${err}`);
   const out = json ? (resultText ?? assistantText) : raw;
-  if (timedOut) return `${out}${RUN_LIMIT} hit the ${Math.round(timeoutMs / 60_000)}-minute work limit${act.step ? `; last step: ${act.step}` : ""}`;
-  if (stalled) return `${out}${STALLED} no output for ${Math.round(stallMs / 60_000)} minutes${act.step ? `; last step: ${act.step}` : ""}`;
+  if (timedOut) return appendComputerUseTrace(`${out}${RUN_LIMIT} hit the ${Math.round(timeoutMs / 60_000)}-minute work limit${act.step ? `; last step: ${act.step}` : ""}`, computerUse.result());
+  if (stalled) return appendComputerUseTrace(`${out}${STALLED} no output for ${Math.round(stallMs / 60_000)} minutes${act.step ? `; last step: ${act.step}` : ""}`, computerUse.result());
   // A provider occasionally answers with an empty completion (no text, no tool call, exit 0) and Claude Code's own
   // "no visible output" retry gets nothing either. That is a flake of the tool chain, not the task failing: rerun the
   // same prompt once, and never hand the empty run back to the caller as the task's result.
@@ -321,7 +335,7 @@ export async function runAgent(cli: string, prompt: string, cwd: string, cfg: Cf
     writeFileSync(logFile, `${first}\n\n[retried after ${why}]\n${readFileSync(logFile, "utf8")}`); // keep both attempts
     return again;
   }
-  return out + (code ? `\n[exit ${code}] ${err.slice(-2000)}` : "");
+  return appendComputerUseTrace(out + (code ? `\n[exit ${code}] ${err.slice(-2000)}` : ""), computerUse.result());
 }
 
 export function parseResult(out: string): Result {
