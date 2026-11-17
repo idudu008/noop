@@ -91,7 +91,25 @@ test("choice() normalises option answers", () => {
   expect(dec.choice("B: wait")).toBe("B");
   expect(dec.choice(" a ")).toBe("A");
   expect(dec.choice("1, 3")).toBe("1,3");
+  expect(dec.choice("1,2,4；完成后执行3")).toBe("1,2,4");
   expect(dec.choice("Approve it")).toBe("approve it");
+});
+
+test("answersMatch() recognises confirmations and complete numeric menus", () => {
+  const four = "1. first | 2. second | 3. third | 4. fourth";
+  const six = `${four} | 5. fifth | 6. sixth`;
+  expect(dec.answersMatch("确定补全。", "1,2,3,4", four)).toBe(true);
+  expect(dec.answersMatch("确定补全。按照推荐的补全", "1", four)).toBe(true);
+  expect(dec.answersMatch("全部", "1,2,3,4；并行执行", four)).toBe(true);
+  expect(dec.answersMatch("全部", "1,2,4；稍后执行3", four)).toBe(true);
+  expect(dec.answersMatch("全部", "1,2,4,5；完成1、2后执行3", "1. first | 2. second | 3. third | 4. fourth | 5. fifth")).toBe(true);
+  expect(dec.answersMatch("全部", "1,4,5,6；1 完成后执行 2，再执行 3", six)).toBe(true);
+  expect(dec.answersMatch("全部", "1；等待 PR #2", "1. first | 2. second")).toBe(false);
+  expect(dec.answersMatch("B: 暂缓", "A", four)).toBe(false);
+  expect(dec.answersMatch("确认 B", "A", "A: proceed | B: wait")).toBe(false);
+  expect(dec.answersMatch("批准 2", "1", four)).toBe(false);
+  expect(dec.classifyAnswer("全部", "1,2", four)).toBe("extended");
+  expect(dec.classifyAnswer("2", "1", four)).toBe("rewritten");
 });
 
 test("linkRefs links PR references using the repositories the decision mentions", () => {
