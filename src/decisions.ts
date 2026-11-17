@@ -9,7 +9,7 @@ import { judgeMayDecide } from "./autonomy";
 import { isMergeCard, mergeHeadline } from "./waits";
 import { answersMatch, choice } from "./choices";
 
-export { answersMatch, choice } from "./choices";
+export { answersMatch, choice, classifyAnswer } from "./choices";
 
 export function openDecision(task: Record<string, string>, res: Result, host: string): string {
   const id = nextId("D", P("decisions"));

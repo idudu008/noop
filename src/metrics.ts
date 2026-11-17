@@ -2,7 +2,7 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { P, list, readDoc } from "./core";
 import { judgeAccuracy } from "./autonomy";
-import { answersMatch } from "./choices";
+import { classifyAnswer, dedupeDecisions } from "./choices";
 
 export function computeMetrics(days = 7) {
   const since = Date.now() - days * 86400e3;
@@ -15,12 +15,23 @@ export function computeMetrics(days = 7) {
       a[folder]++;
       if (m.started && m.finished) a.minutes.push((Date.parse(m.finished) - Date.parse(m.started)) / 60e3);
     }
-  const decisions = list(P("decisions", "closed")).map((p) => readDoc(p).meta).filter((m) => Date.parse(m.answered ?? "") > since);
+  const decisions = dedupeDecisions(list(P("decisions", "closed")).map((p) => readDoc(p).meta))
+    .filter((m) => Date.parse(m.answered ?? "") > since);
   const byWho = (re: RegExp) => decisions.filter((m) => re.test(m.answered_by ?? "")).length;
-  // owner answering the same agent's questions with the recommended option → candidate for auto-approval
+  // Owner responses to recommendations, classified from original answer semantics rather than derived flags.
   const rubberStamp: Record<string, number> = {};
-  for (const m of decisions) if (/^owner/.test(m.answered_by) && m.recommendation && answersMatch(m.answer, m.recommendation, m.options))
-    rubberStamp[m.agent] = (rubberStamp[m.agent] ?? 0) + 1;
+  const recommendationOutcomes = { total: 0, accepted: 0, extended: 0, rewritten: 0,
+    by_agent: {} as Record<string, { total: number; accepted: number; extended: number; rewritten: number }> };
+  for (const m of decisions) if (/^owner/.test(m.answered_by) && m.recommendation) {
+    const outcome = classifyAnswer(m.answer, m.recommendation, m.options);
+    recommendationOutcomes.total++;
+    recommendationOutcomes[outcome]++;
+    const agent = m.agent || "generalist";
+    const counts = (recommendationOutcomes.by_agent[agent] ??= { total: 0, accepted: 0, extended: 0, rewritten: 0 });
+    counts.total++;
+    counts[outcome]++;
+    if (outcome === "accepted") rubberStamp[agent] = (rubberStamp[agent] ?? 0) + 1;
+  }
   const agents = Object.fromEntries(Object.entries(per).map(([k, v]) => {
     const n = v.done + v.failed + v.blocked;
     const med = v.minutes.sort((a, b) => a - b)[Math.floor(v.minutes.length / 2)] ?? 0;
@@ -36,7 +47,7 @@ export function computeMetrics(days = 7) {
     shadow_judge_by_agent: Object.fromEntries(Object.keys(per).map((a) => [a, judgeAccuracy(a)])), proposal_batches: approvals.length, proposals_rejected_total: rejected,
     window_days: days, generated: new Date().toISOString(), agents,
     decisions: { total: decisions.length, by_judge: byWho(/^judge/), by_owner: byWho(/^owner\(/), owner_overrides_of_judge: byWho(/override/),
-      owner_accepted_recommendation: rubberStamp },
+      owner_accepted_recommendation: rubberStamp, recommendation_outcomes: recommendationOutcomes },
   };
   mkdirSync(P("fleet"), { recursive: true });
   writeFileSync(P("fleet", "metrics.json"), JSON.stringify(out, null, 2));

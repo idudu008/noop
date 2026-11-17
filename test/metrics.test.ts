@@ -49,3 +49,34 @@ test("natural-language confirmations count as judge agreement and recommendation
   expect(m.shadow_judge.accuracy).toBe(1);
   expect(m.decisions.owner_accepted_recommendation["chief-of-staff"]).toBe(1);
 });
+
+test("recommendation outcomes use full dependency semantics and dedupe decision ids", () => {
+  const options = "1. first | 2. second | 3. third | 4. fourth";
+  writeDoc(P("decisions", "closed", "copy-of-D-0001.md"), {
+    id: "D-0001", agent: "chief-of-staff", answered: at(10), answered_by: "owner(chat)",
+    recommendation: "1,2,4；稍后执行3", answer: "2", options,
+  }, "older copy");
+  writeDoc(P("decisions", "closed", "D-0001.md"), {
+    id: "D-0001", agent: "chief-of-staff", answered: at(5), answered_by: "owner(chat)",
+    recommendation: "1,2,4；稍后执行3", answer: "全部", options,
+  }, "latest answer");
+  writeDoc(P("decisions", "closed", "D-0002.md"), {
+    id: "D-0002", agent: "chief-of-staff", answered: at(4), answered_by: "owner(chat)",
+    recommendation: "1,2", answer: "全部", options,
+  }, "extended");
+  writeDoc(P("decisions", "closed", "D-0003.md"), {
+    id: "D-0003", agent: "lead", answered: at(3), answered_by: "owner(chat)",
+    recommendation: "A", answer: "确认 B", options: "A: proceed | B: wait",
+  }, "rewritten");
+
+  const m = M.computeMetrics(7);
+  expect(m.decisions.total).toBe(3);
+  expect(m.decisions.recommendation_outcomes).toEqual({
+    total: 3, accepted: 1, extended: 1, rewritten: 1,
+    by_agent: {
+      "chief-of-staff": { total: 2, accepted: 1, extended: 1, rewritten: 0 },
+      lead: { total: 1, accepted: 0, extended: 0, rewritten: 1 },
+    },
+  });
+  expect(m.decisions.owner_accepted_recommendation).toEqual({ "chief-of-staff": 1 });
+});
