@@ -2,8 +2,9 @@
 // Backends: sway (headless Wayland, GPU) → Xvfb (X11, always available) on Linux; native screencapture on macOS.
 // State is per session name under ~/.noop/visual/<name>/ so parallel reviews never share a display.
 import { $ } from "bun";
+import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { HOME_DIR } from "./core";
 
 const BASE = join(HOME_DIR, "visual");
@@ -23,8 +24,16 @@ type Sess = {
   capabilities?: { screenshot: EvidenceStatus; recording: EvidenceStatus; input: EvidenceStatus };
   processes?: ProcessRecord[];
   lastSuccess?: { action: string; at: string };
+  lastAction?: { action: string; status: "succeeded" | "failed"; at: string };
   blocker?: string;
   recovery?: string;
+};
+
+type CandidateIdentity = {
+  commit: string;
+  tree: string;
+  binarySha256: string;
+  archiveSha256: string;
 };
 
 const dir = (name: string) => join(BASE, name);
@@ -53,6 +62,15 @@ const tail = (path: string, limit = 1200) => {
   if (!existsSync(path)) return "";
   const text = readFileSync(path, "utf8");
   return text.slice(-limit).trim();
+};
+const sha256 = (value: string | Buffer) => createHash("sha256").update(value).digest("hex");
+const gitValue = (root: string, ...args: string[]) => {
+  const result = Bun.spawnSync(["git", "-C", root, ...args], { stdout: "pipe", stderr: "pipe" });
+  return result.exitCode === 0 ? result.stdout.toString().trim() : "unavailable";
+};
+const option = (args: string[], name: string) => {
+  const at = args.indexOf(name);
+  return at >= 0 ? args[at + 1] : undefined;
 };
 const block = (session: Sess, reason: string, recovery: string) => {
   session.blocker = reason;
@@ -233,8 +251,10 @@ function observe(name: string, kind: string, state: string, detail: string) {
     session.currentStep = detail || state;
     save(session);
   } else if (kind === "action") {
-    if (state === "ok") success(session, detail || "Computer Use action succeeded");
-    else block(session, detail || "Computer Use action failed", `Recover the target application, then repeat the failed action and record it with noop visual observe ${name} action ok <result>`);
+    if (!new Set(["ok", "blocked"]).has(state)) throw new Error("action state must be ok or blocked");
+    session.lastAction = { action: detail || `Computer Use action ${state === "ok" ? "succeeded" : "failed"}`, status: state === "ok" ? "succeeded" : "failed", at: observedAt };
+    if (state === "ok") success(session, session.lastAction.action);
+    else block(session, session.lastAction.action, `Recover the target application, then repeat the failed action and record it with noop visual observe ${name} action ok <result>`);
   } else throw new Error("observe kind must be authorization, process, window, capture, step, or action");
   console.log(JSON.stringify(report(load(name)), null, 2));
 }
@@ -247,7 +267,7 @@ function report(session: Sess) {
     processAlive: processes.some((process) => process.alive) || session.processObservation?.status === "running",
     windowVisible: session.window?.status === "visible",
     captureAvailable: session.capabilities?.screenshot === "available" || session.capabilities?.recording === "available",
-    successfulActionObserved: !!session.lastSuccess,
+    successfulActionObserved: session.lastAction?.status === "succeeded",
   };
   const ready = Object.values(checks).every(Boolean);
   let blocker: string | undefined;
@@ -260,10 +280,84 @@ function report(session: Sess) {
   else if (!checks.successfulActionObserved) [blocker, recovery] = ["no successful GUI action has been observed", `Perform one target action, then run noop visual observe ${session.name} action ok <result>`];
   return {
     session: session.name, backend: session.backend, target: session.target, currentStep: session.currentStep,
-    processes, processObservation: session.processObservation, window: session.window, capabilities: session.capabilities, lastSuccess: session.lastSuccess,
+    processes, processObservation: session.processObservation, window: session.window, capabilities: session.capabilities, lastSuccess: session.lastSuccess, lastAction: session.lastAction,
     lastFailure: session.blocker ? { reason: session.blocker, recovery: session.recovery } : undefined,
     blocker: ready ? undefined : blocker, recovery: ready ? undefined : recovery, checks, ready,
   };
+}
+
+function candidateReceipt(name: string, args: string[]) {
+  const session = load(name);
+  const visual = report(session);
+  const repositoryRoot = resolve(import.meta.dir, "..");
+  const verifier = {
+    contractVersion: 1,
+    command: `noop visual verify ${name}`,
+    repositoryCommit: gitValue(repositoryRoot, "rev-parse", "HEAD"),
+    repositoryTree: gitValue(repositoryRoot, "rev-parse", "HEAD^{tree}"),
+    visualSourceSha256: sha256(readFileSync(import.meta.path)),
+    cliSourceSha256: sha256(readFileSync(join(repositoryRoot, "src", "cli.ts"))),
+  };
+  const output = option(args, "--output");
+  const expectedTarget = option(args, "--target");
+  const candidate: CandidateIdentity = {
+    commit: option(args, "--candidate-commit") ?? "",
+    tree: option(args, "--candidate-tree") ?? "",
+    binarySha256: option(args, "--candidate-binary-sha256") ?? "",
+    archiveSha256: option(args, "--candidate-archive-sha256") ?? "",
+  };
+  const blockers: string[] = [];
+  if (!visual.ready) blockers.push(visual.blocker ?? "visual verification is incomplete");
+  if (!output) blockers.push("--output is required");
+  if (!expectedTarget) blockers.push("--target is required");
+  else if (session.target?.name !== expectedTarget) blockers.push(`target mismatch: session=${session.target?.name ?? "none"} expected=${expectedTarget}`);
+  if (!/^[0-9a-f]{40}$/i.test(candidate.commit)) blockers.push("--candidate-commit must be a full 40-character Git commit");
+  if (!/^[0-9a-f]{40}$/i.test(candidate.tree)) blockers.push("--candidate-tree must be a full 40-character Git tree");
+  if (!/^[0-9a-f]{64}$/i.test(candidate.binarySha256)) blockers.push("--candidate-binary-sha256 must be a 64-character SHA-256");
+  if (!/^[0-9a-f]{64}$/i.test(candidate.archiveSha256)) blockers.push("--candidate-archive-sha256 must be a 64-character SHA-256");
+  if (!/^[0-9a-f]{40}$/i.test(verifier.repositoryCommit)) blockers.push("verifier Git commit is unavailable");
+  if (!/^[0-9a-f]{40}$/i.test(verifier.repositoryTree)) blockers.push("verifier Git tree is unavailable");
+  if (output && existsSync(resolve(output))) blockers.push(`receipt output already exists: ${resolve(output)}`);
+  if (blockers.length) {
+    console.log(JSON.stringify({ schema: "noop.visual.candidate-receipt/v1", status: "blocked", blockers }, null, 2));
+    process.exitCode = 42;
+    return;
+  }
+  const receipt = {
+    schema: "noop.visual.candidate-receipt/v1",
+    generatedAt: now(),
+    candidate,
+    target: {
+      name: session.target!.name,
+      authorization: session.target!.authorization,
+      authorizationDetail: session.target!.detail,
+      authorizationRequestedAt: session.target!.requestedAt,
+    },
+    execution: {
+      backend: session.backend,
+      currentStep: session.currentStep,
+      processes: visual.processes.map(({ pid, command, startedAt, alive }) => ({ pid, command, startedAt, alive })),
+      processObservation: session.processObservation,
+      window: session.window,
+      capture: {
+        screenshot: session.capabilities!.screenshot,
+        recording: session.capabilities!.recording,
+      },
+      lastAction: session.lastAction,
+    },
+    verifier,
+    final: { status: "verified", checks: visual.checks },
+  };
+  const path = resolve(output!);
+  try {
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, JSON.stringify(receipt, null, 2), { flag: "wx" });
+  } catch (error) {
+    console.log(JSON.stringify({ schema: receipt.schema, status: "blocked", blockers: [`receipt write failed: ${String(error)}`] }, null, 2));
+    process.exitCode = 42;
+    return;
+  }
+  console.log(JSON.stringify({ status: "verified", receipt: path, receiptSha256: sha256(readFileSync(path)) }, null, 2));
 }
 
 function status(name: string, required: boolean) {
@@ -299,6 +393,7 @@ export async function visual(args: string[]) {
     case "observe": return observe(name, rest[0] ?? "", rest[1] ?? "", rest.slice(2).join(" "));
     case "status": return status(name, false);
     case "verify": return status(name, true);
+    case "receipt": return candidateReceipt(name, rest);
     case "stop": return stop(name);
     default:
       console.log(`hub visual start <name> [WxH] [--target <app>]  start an observable GUI session (${backendFor()})
@@ -306,6 +401,8 @@ hub visual run <name> -- <cmd...>                 launch and track an app
 hub visual observe <name> <kind> <state> [detail] record Computer Use authorization/process/window/capture/action/step evidence
 hub visual status <name>                          show processes, window, capabilities, last action and blocker
 hub visual verify <name>                          fail closed with exit 42 until all evidence is ready
+hub visual receipt <name> --target <app> --candidate-commit <sha> --candidate-tree <sha> --candidate-binary-sha256 <sha> --candidate-archive-sha256 <sha> --output <path>
+                                                  write an immutable candidate-bound receipt only after verify passes
 hub visual shot <name> [out.png]                  screenshot
 hub visual record <name> [out.mp4]                start recording;  hub visual stop-record <name>
 hub visual input <name> type <text> | key <Return> | click <x> <y>
