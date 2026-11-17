@@ -7,6 +7,9 @@ import { notify } from "./notify";
 import { ask, type Result } from "./runner";
 import { judgeMayDecide } from "./autonomy";
 import { isMergeCard, mergeHeadline } from "./waits";
+import { answersMatch, choice } from "./choices";
+
+export { answersMatch, choice } from "./choices";
 
 export function openDecision(task: Record<string, string>, res: Result, host: string): string {
   const id = nextId("D", P("decisions"));
@@ -55,19 +58,12 @@ Reply with only a \`\`\`json block: {"verdict": "...", "answer": "...", "reason"
   return ask(prompt, cfg, P("logs", "runs", `${id}-judge.log`));
 }
 
-/** Leading option letter/number of an answer ("B: merge…" → "B"; "1,3" → "1,3"); free text → whole text, lower-cased. */
-export function choice(s: string | undefined): string {
-  const t = (s ?? "").trim();
-  const m = t.match(/^([A-Za-z]|\d+(?:\s*[,，]\s*\d+)*)(?=$|[\s:：.)、,，])/);
-  return m ? m[1].replace(/\s/g, "").replace(/，/g, ",").toUpperCase() : t.toLowerCase();
-}
-
 /** Owner answered: score the judge's shadow answer and, when the owner overrode the agent's recommendation, keep a lesson. */
 function learn(meta: Record<string, string>, answer: string, by: string): Record<string, string | undefined> {
   if (!/^owner/.test(by)) return {};
   const extra: Record<string, string | undefined> = {};
-  if (meta.shadow_verdict && meta.shadow_answer) extra.shadow_agree = choice(meta.shadow_answer) === choice(answer) ? "yes" : "no";
-  if (meta.recommendation && meta.kind !== "proposals" && choice(meta.recommendation) !== choice(answer)) {
+  if (meta.shadow_verdict && meta.shadow_answer) extra.shadow_agree = answersMatch(answer, meta.shadow_answer, meta.options) ? "yes" : "no";
+  if (meta.recommendation && meta.kind !== "proposals" && !answersMatch(answer, meta.recommendation, meta.options)) {
     extra.overrode_recommendation = "yes";
     const f = P("memory", "lessons.md");
     if (!existsSync(f)) writeFileSync(f, "# Lessons learned (auto-appended by agents)\n\n");

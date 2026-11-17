@@ -3,6 +3,7 @@
 import { existsSync, unlinkSync } from "node:fs";
 import { type Cfg, L, P, fileId, journal, list, nextId, now, readDoc, writeDoc } from "./core";
 import { notify } from "./notify";
+import { answersMatch } from "./choices";
 
 export type Level = "onboarding" | "assisted" | "autonomous";
 /** Global level, optionally overridden per agent ([autonomy.agents] reviewer = "assisted") as trust is earned. */
@@ -148,9 +149,9 @@ export function resolveProposals(id: string, answer: string, by: string): boolea
 export function judgeAccuracy(agent?: string) {
   const rows = list(P("decisions", "closed")).map((p) => readDoc(p).meta)
     .filter((m) => m.shadow_verdict && /^owner/.test(m.answered_by ?? "") && (!agent || m.agent === agent));
-  // every owner-answered decision the judge also answered counts (held ones too): shadow_agree is set by closeDecision
-  const scored = rows.filter((m) => m.shadow_agree === "yes" || m.shadow_agree === "no");
-  const agree = scored.filter((m) => m.shadow_agree === "yes");
+  // Recompute from the original answers so improved option normalisation repairs historical snapshots too.
+  const scored = rows.filter((m) => m.shadow_answer && m.answer);
+  const agree = scored.filter((m) => answersMatch(m.answer, m.shadow_answer, m.options));
   const decided = rows.filter((m) => m.shadow_verdict === "decided");
   return { samples: rows.length, would_decide: decided.length, scored: scored.length, agreed: agree.length,
     accuracy: scored.length ? +(agree.length / scored.length).toFixed(2) : null };

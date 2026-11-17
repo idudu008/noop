@@ -91,7 +91,17 @@ test("choice() normalises option answers", () => {
   expect(dec.choice("B: wait")).toBe("B");
   expect(dec.choice(" a ")).toBe("A");
   expect(dec.choice("1, 3")).toBe("1,3");
+  expect(dec.choice("1,2,4；完成后执行3")).toBe("1,2,4");
   expect(dec.choice("Approve it")).toBe("approve it");
+});
+
+test("answersMatch() recognises confirmations and complete numeric menus", () => {
+  const four = "1. first | 2. second | 3. third | 4. fourth";
+  expect(dec.answersMatch("确定补全。", "1,2,3,4", four)).toBe(true);
+  expect(dec.answersMatch("确定补全。按照推荐的补全", "1", four)).toBe(true);
+  expect(dec.answersMatch("全部", "1,2,3,4；并行执行", four)).toBe(true);
+  expect(dec.answersMatch("全部", "1,2,4；稍后执行3", four)).toBe(false);
+  expect(dec.answersMatch("B: 暂缓", "A", four)).toBe(false);
 });
 
 test("linkRefs links PR references using the repositories the decision mentions", () => {

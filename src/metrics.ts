@@ -2,6 +2,7 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { P, list, readDoc } from "./core";
 import { judgeAccuracy } from "./autonomy";
+import { answersMatch } from "./choices";
 
 export function computeMetrics(days = 7) {
   const since = Date.now() - days * 86400e3;
@@ -18,7 +19,7 @@ export function computeMetrics(days = 7) {
   const byWho = (re: RegExp) => decisions.filter((m) => re.test(m.answered_by ?? "")).length;
   // owner answering the same agent's questions with the recommended option → candidate for auto-approval
   const rubberStamp: Record<string, number> = {};
-  for (const m of decisions) if (/^owner/.test(m.answered_by) && m.recommendation && m.answer?.trim().startsWith(m.recommendation.trim()))
+  for (const m of decisions) if (/^owner/.test(m.answered_by) && m.recommendation && answersMatch(m.answer, m.recommendation, m.options))
     rubberStamp[m.agent] = (rubberStamp[m.agent] ?? 0) + 1;
   const agents = Object.fromEntries(Object.entries(per).map(([k, v]) => {
     const n = v.done + v.failed + v.blocked;

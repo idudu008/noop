@@ -36,3 +36,16 @@ test("an agent that only ever asked for a decision has no success rate to judge"
   expect(m.agents["chief-of-staff"].blocked).toBe(2);
   expect(m.agents["chief-of-staff"].success).toBeNull();
 });
+
+test("natural-language confirmations count as judge agreement and recommendation acceptance", () => {
+  const options = "1. first | 2. second | 3. third | 4. fourth";
+  writeDoc(P("decisions", "closed", "D-0001.md"), {
+    id: "D-0001", agent: "chief-of-staff", answered: at(5), answered_by: "owner(chat)",
+    recommendation: "1,2,3,4；并行执行", shadow_verdict: "hold", shadow_answer: "1,2,3,4", answer: "确定补全。", options,
+    shadow_agree: "no", overrode_recommendation: "yes",
+  }, "body");
+  const m = M.computeMetrics(7);
+  expect(m.shadow_judge.agreed).toBe(1);
+  expect(m.shadow_judge.accuracy).toBe(1);
+  expect(m.decisions.owner_accepted_recommendation["chief-of-staff"]).toBe(1);
+});
