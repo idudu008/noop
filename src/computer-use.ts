@@ -11,6 +11,7 @@ export type ComputerUseTrace = {
 
 export type ComputerUseRecovery =
   | { action: "requeue"; target: string; note: string; attempt: number }
+  | { action: "wait"; target: string; reason: string }
   | { action: "fail"; reason: string };
 
 export const COMPUTER_USE_TRACE = "\n[computer-use-trace]";
@@ -127,13 +128,16 @@ export function computerUseRecovery(meta: Record<string, any>, body: string, tra
   if (!stopped.target) return { action: "fail", reason: "the stopped Computer Use call was not bound to an exact application target" };
   const previousTarget = meta.computer_use_recovery_target;
   if (previousTarget && previousTarget !== stopped.target) return { action: "fail", reason: "the stopped request changed application targets" };
-  const attempts = Number(meta.computer_use_recovery_attempts ?? 0);
-  if (attempts >= 1) return { action: "fail", reason: "the one-turn Computer Use recovery limit was reached" };
   if (!hasContinuousAuthorization(meta, body, stopped.target)) return { action: "fail", reason: "no applicable same-kind continuing owner authorization was recorded" };
   const target = stopped.target;
+  if (trace.deniedTarget === target) {
+    return { action: "wait", target, reason: "the Computer Use platform denied target-level application control" };
+  }
+  const attempts = Number(meta.computer_use_recovery_attempts ?? 0);
+  if (attempts >= 1) return { action: "fail", reason: "the one-turn Computer Use recovery limit was reached" };
   return {
     action: "requeue", target, attempt: attempts + 1,
-    note: `Computer Use marked the previous assistant turn stopped. The owner already authorized this same-kind application-control request. In this fresh turn, make exactly one first Computer Use request: cua.getApp(${JSON.stringify(target)}). Do not call cua.getState, Finder, another target, or a second getApp before it. Continue only if that exact call returns the application handle. If it is denied, stopped again, or asks for a materially different permission, fail closed; do not return waiting and do not infer authorization from chat, TCC, inventory, process state or screenshots.`,
+    note: `Computer Use marked the previous assistant turn stopped. The owner already authorized this same-kind application-control request. In this fresh turn, make exactly one first Computer Use request: cua.getApp(${JSON.stringify(target)}). Do not call cua.getState, Finder, another target, or a second getApp before it. Continue only if that exact call returns the application handle. If the platform denies target control, return waiting with wait_kind human and the exact target as the recovery condition; do not retry or report the task failed. If it is stopped again or asks for a materially different permission, fail closed. Never infer authorization from chat, TCC, inventory, process state or screenshots.`,
   };
 }
 
