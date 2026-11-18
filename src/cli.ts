@@ -181,6 +181,21 @@ async function processTask(path: string, cfg: Cfg, host: string) {
         });
         return;
       }
+      if (recovery.action === "wait") {
+        res = {
+          status: "waiting",
+          wait_kind: "human",
+          waiting_on: L(
+            `Computer Use target approval for ${recovery.target}; resume when a fresh exact-target getApp returns an application handle`,
+            `等待 Computer Use 对 ${recovery.target} 的目标级授权生效；fresh exact-target getApp 返回应用句柄后继续`,
+          ),
+          summary: L(
+            `Computer Use denied target-level control for ${recovery.target}. Continuing owner authorization is already recorded, so Noop parked the task instead of retrying or reporting a task failure.`,
+            `Computer Use 拒绝了 ${recovery.target} 的目标级控制。owner 的同类持续授权已记录，Noop 已将任务停放等待，而不是重复重排或误报任务失败。`,
+          ),
+        };
+        break;
+      }
       res = { status: "failed", summary: L(`Computer Use stopped the assistant turn; recovery failed closed: ${recovery.reason}`,
         `Computer Use 已停止当前 assistant turn；安全恢复 fail closed：${recovery.reason}`) };
       break;

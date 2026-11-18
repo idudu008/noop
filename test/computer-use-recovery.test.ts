@@ -10,7 +10,7 @@ import type { Cfg } from "../src/core";
 const target = "/Volumes/DevDrive/Developer/candidate/Teacher Doc Studio.app";
 const ownerTask = `完成 Teacher Doc Studio GUI 验收。出现同类确认权限时按 owner 既有持续授权默认允许，无需逐次确认。`;
 
-function stoppedTrace(request = target) {
+function deniedThenStoppedTrace(request = target) {
   const observer = new ComputerUseObserver();
   observer.observe(JSON.stringify({ type: "response_item", payload: { type: "function_call", namespace: "mcp__cua_repl", name: "js", call_id: "a", arguments: JSON.stringify({ code: `let app = await cua.getApp(${JSON.stringify(request)});` }) } }));
   observer.observe(JSON.stringify({ type: "response_item", payload: { type: "function_call_output", call_id: "a", output: `Computer Use was not approved to use Teacher Doc Studio` } }));
@@ -19,10 +19,18 @@ function stoppedTrace(request = target) {
   return observer.result()!;
 }
 
+function stoppedTrace(request = target) {
+  const observer = new ComputerUseObserver();
+  observer.observe(JSON.stringify({ type: "response_item", payload: { type: "function_call", namespace: "mcp__cua_repl", name: "js", call_id: "a", arguments: JSON.stringify({ code: `let app = await cua.getApp(${JSON.stringify(request)});` }) } }));
+  observer.observe(JSON.stringify({ type: "response_item", payload: { type: "function_call_output", call_id: "a", output: "This application session has been explicitly stopped by the user for this turn. Stop your work." } }));
+  return observer.result()!;
+}
+
 describe("Computer Use stopped-turn recovery", () => {
   test("binds a real CUA stop to the denied exact target, not arbitrary transcript text", () => {
-    const trace = stoppedTrace();
+    const trace = deniedThenStoppedTrace();
     expect(trace.stopped?.target).toBe(target);
+    expect(trace.deniedTarget).toBe(target);
     expect(trace.getAppRequests).toEqual([target, "Finder"]);
     expect(trace.calls).toEqual([`getApp:${target}`, "getApp:Finder"]);
     const encoded = appendComputerUseTrace("reply", trace);
@@ -34,16 +42,21 @@ describe("Computer Use stopped-turn recovery", () => {
   });
 
   test("inherits only applicable same-kind owner authorization for the named target", () => {
-    expect(computerUseRecovery({ origin: "owner" }, ownerTask, stoppedTrace())).toMatchObject({ action: "requeue", target, attempt: 1 });
-    expect(computerUseRecovery({ origin: "owner" }, ownerTask.replace("Teacher Doc Studio", "Other App"), stoppedTrace())).toMatchObject({ action: "fail" });
-    expect(computerUseRecovery({ origin: "owner" }, "允许屏幕录制权限。Teacher Doc Studio", stoppedTrace())).toMatchObject({ action: "fail" });
+    expect(computerUseRecovery({ origin: "owner" }, ownerTask, deniedThenStoppedTrace())).toMatchObject({ action: "wait", target });
+    expect(computerUseRecovery({ origin: "owner" }, ownerTask.replace("Teacher Doc Studio", "Other App"), deniedThenStoppedTrace())).toMatchObject({ action: "fail" });
+    expect(computerUseRecovery({ origin: "owner" }, "允许屏幕录制权限。Teacher Doc Studio", deniedThenStoppedTrace())).toMatchObject({ action: "fail" });
   });
 
   test("owner follow-up can grant continuing same-kind authorization without broad system permission inheritance", () => {
     const body = `Teacher Doc Studio\n\n## Owner follow-up 2026-11-17\n> 允许授权。后续 GUI 测试出现确认权限时默认允许，无需逐次确认。\n`;
-    expect(computerUseRecovery({}, body, stoppedTrace()).action).toBe("requeue");
-    const different = { ...stoppedTrace(), stopped: { permission: "application-control" as const, target: "/Applications/Other.app", message: "stopped" } };
+    expect(computerUseRecovery({}, body, deniedThenStoppedTrace()).action).toBe("wait");
+    const different = { ...deniedThenStoppedTrace(), stopped: { permission: "application-control" as const, target: "/Applications/Other.app", message: "stopped" } };
     expect(computerUseRecovery({}, body, different).action).toBe("fail");
+  });
+
+  test("target denial parks for approval instead of consuming the fresh-turn retry", () => {
+    expect(computerUseRecovery({ origin: "owner", computer_use_recovery_attempts: "1" }, ownerTask, deniedThenStoppedTrace()))
+      .toEqual({ action: "wait", target, reason: "the Computer Use platform denied target-level application control" });
   });
 
   test("requeues at most once and remains idempotent on the recovery metadata", () => {
