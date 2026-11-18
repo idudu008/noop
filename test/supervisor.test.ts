@@ -1,7 +1,7 @@
 import { afterAll, expect, test } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { P, list, readDoc, writeDoc } from "../src/core";
-import { sweepPlatform, alreadyAsked, cardFor, checkUnrunnable, classify, groupByCause, supervise, type Ctx, type Task } from "../src/supervisor";
+import { archiveSupersededHumanWaits, humanGateKey, humanGateSupersessions, isDownstreamHumanWait, sweepPlatform, alreadyAsked, cardFor, checkUnrunnable, classify, groupByCause, supervise, type Ctx, type Task } from "../src/supervisor";
 import { closeDecision, ignoreDecision } from "../src/decisions";
 
 const H = 3_600_000;
@@ -160,6 +160,72 @@ test("macOS host online + wait_check unrunnable on the primary: hand back to the
   const m = { id: "T-1", requires: "os:macos", created: new Date(NOW - 10 * H).toISOString(), waiting_on: "x", wait_check: "test -f /Users/j/done" };
   expect(classify(task(m), ctx())!.action).toBe("reroute");
   expect(classify(task({ ...m, supervisor_requeued: "yes" }), ctx())!.action).toBe("escalate");
+});
+
+test("human gate identity covers GUI and CJ artifacts while preserving downstream waits", () => {
+  const gui = task({ id: "T-1", wait_kind: "human", wait_check: "test -f '/work/native-verify-complete.receipt'" });
+  const cj = task({ id: "T-2", wait_kind: "human", wait_check: "awk 'ok' /work/CJ-001/sanitized-hub-projection.tsv" });
+  const downstream = { ...gui, meta: { ...gui.meta, id: "T-3" }, body: "仅在 T-1 确认完成后执行漂移巡检。" };
+  expect(humanGateKey(gui)).toBe("artifact:/work/native-verify-complete.receipt");
+  expect(humanGateKey(cj)).toBe("artifact:/work/CJ-001/sanitized-hub-projection.tsv");
+  expect(isDownstreamHumanWait(downstream)).toBe(true);
+});
+
+test("same GUI and CJ gates keep only the newest executor", () => {
+  const mk = (id: string, created: string, check: string): Task => task({ id, created, wait_kind: "human", wait_check: check });
+  const groups = humanGateSupersessions([
+    mk("T-G1", "2026-11-17T01:00:00Z", "test -f '/work/native-verify-complete.receipt'"),
+    mk("T-G2", "2026-11-18T01:00:00Z", "test -f '/work/native-verify-complete.receipt'"),
+    mk("T-C1", "2026-11-17T01:00:00Z", "awk ok /work/CJ-001/sanitized-hub-projection.tsv"),
+    mk("T-C2", "2026-11-18T01:00:00Z", "awk ok /work/CJ-001/sanitized-hub-projection.tsv"),
+  ]);
+  expect(groups.map((g) => [g.latest.meta.id, g.old.map((t) => t.meta.id)])).toEqual([
+    ["T-G2", ["T-G1"]], ["T-C2", ["T-C1"]],
+  ]);
+});
+
+test("deployment target groups equivalent checks but not a dependent drift task", () => {
+  const target = "54a456aa19456a2395c3502b49c844f01d4ba82f";
+  const old = task({ id: "T-D1", created: "2026-11-17T01:00:00Z", wait_kind: "human", wait_check: `target=${target}; test \"$(git -C /app rev-parse HEAD)\" = \"$target\"` });
+  const latest = task({ id: "T-D2", created: "2026-11-18T01:00:00Z", wait_kind: "human", wait_check: `target=${target}; head=$(git -C /app rev-parse HEAD); test \"$head\" = \"$target\"` });
+  const dependent = { ...latest, meta: { ...latest.meta, id: "T-D3", created: "2026-11-18T02:00:00Z" }, body: "仅在 T-D1 确认完成后执行版本漂移巡检。" };
+  expect(humanGateKey(old)).toBe(humanGateKey(latest));
+  const groups = humanGateSupersessions([old, latest, dependent]);
+  expect(groups).toHaveLength(1);
+  expect(groups[0].latest.meta.id).toBe("T-D2");
+  expect(groups[0].old.map((t) => t.meta.id)).toEqual(["T-D1"]);
+});
+
+test("supervisor archives old human projections and rewires delegated parents", () => {
+  const suffix = `${process.pid}-${Date.now()}`;
+  const oldId = `T-old-${suffix}`, latestId = `T-new-${suffix}`, parentId = `T-parent-${suffix}`, dependentId = `T-dependent-${suffix}`;
+  const paths = {
+    old: P("tasks", "blocked", `${oldId}.md`), latest: P("tasks", "waiting", `${latestId}.md`),
+    parent: P("tasks", "waiting", `${parentId}.md`), dependent: P("tasks", "waiting", `${dependentId}.md`),
+    archived: P("tasks", "done", `${oldId}.md`),
+  };
+  try {
+    const check = "test -f '/work/native-verify-complete.receipt'";
+    writeDoc(paths.old, { id: oldId, title: "old GUI", created: "2026-11-17T01:00:00Z", wait_kind: "human", wait_check: check, parent: parentId }, "old evidence");
+    writeDoc(paths.latest, { id: latestId, title: "new GUI", created: "2026-11-18T01:00:00Z", wait_kind: "human", wait_check: check }, "new evidence");
+    writeDoc(paths.dependent, { id: dependentId, title: "drift", created: "2026-11-18T02:00:00Z", wait_kind: "human", wait_check: check, wait_role: "dependency" }, "downstream");
+    writeDoc(paths.parent, { id: parentId, title: "menu", children: `${oldId},${dependentId}` }, "parent evidence");
+    const tasks = [paths.old, paths.latest, paths.dependent, paths.parent].map((path) => {
+      const folder = path === paths.old ? "blocked" as const : "waiting" as const;
+      return { path, folder, ...readDoc(path) };
+    });
+    expect(archiveSupersededHumanWaits(tasks, "test", "2026-11-18T03:00:00Z")).toBe(1);
+    expect(existsSync(paths.old)).toBe(false);
+    const archived = readDoc(paths.archived);
+    expect(archived.meta).toMatchObject({ status: "superseded", superseded_by: latestId });
+    expect(archived.body).toContain("old evidence");
+    expect(archived.body).toContain("is not completed");
+    expect(readDoc(paths.latest).meta.supersedes).toBe(oldId);
+    expect(readDoc(paths.parent).meta.children).toBe(`${latestId},${dependentId}`);
+    expect(existsSync(paths.dependent)).toBe(true);
+  } finally {
+    for (const path of Object.values(paths)) rmSync(path, { force: true });
+  }
 });
 
 import { trackedPrs } from "../src/supervisor";

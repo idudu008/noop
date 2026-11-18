@@ -11,6 +11,7 @@ export function computeMetrics(days = 7) {
     for (const p of list(P("tasks", folder), /^T-.*\.md$/)) {
       const m = readDoc(p).meta;
       if (Date.parse(m.finished ?? m.created) < since) continue;
+      if (m.status === "superseded") continue;
       const a = (per[m.agent || "generalist"] ??= { done: 0, failed: 0, blocked: 0, minutes: [] });
       a[folder]++;
       if (m.started && m.finished) a.minutes.push((Date.parse(m.finished) - Date.parse(m.started)) / 60e3);

@@ -80,3 +80,11 @@ test("recommendation outcomes use full dependency semantics and dedupe decision 
   });
   expect(m.decisions.owner_accepted_recommendation).toEqual({ "chief-of-staff": 1 });
 });
+
+test("superseded projections are archive records, not successful runs", () => {
+  task("done", "T-0001", "lead");
+  task("done", "T-0002", "lead", { status: "superseded", superseded_by: "T-0003" });
+  const m = M.computeMetrics(7);
+  expect(m.agents.lead.runs).toBe(1);
+  expect(m.agents.lead.success).toBe(1);
+});
