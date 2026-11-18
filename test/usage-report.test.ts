@@ -13,11 +13,12 @@ test("usage report: this week vs previous week, PRs deduplicated, decisions by w
     writeDoc(P("tasks", folder, `${id}.md`), { id, created: at(days + 0.1), started: at(days + 0.05), finished: at(days), ...extra }, body);
   task("T-1", "done", 1, { source: "owner@chat", agent: "lead", claimed_by: "a", model: "m1", channels: "nsh,noop-app" }, "https://github.com/o/r/pull/1 and https://github.com/o/r/pull/1");
   task("T-2", "failed", 2, { source: "routine:pr-review", agent: "reviewer", claimed_by: "b", model: "m1" }, "https://github.com/o/r/pull/2");
+  task("T-4", "done", 3, { source: "owner@chat", agent: "lead", status: "superseded", superseded_by: "T-1" });
   task("T-3", "done", 9, { source: "owner@chat", agent: "lead" });
   writeDoc(P("decisions", "closed", "D-1.md"), { id: "D-1", answered: at(1), answered_by: "owner(chat)" }, "");
   writeDoc(P("decisions", "closed", "D-2.md"), { id: "D-2", answered: at(3), answered_by: "judge" }, "");
   const r = usageReport(end);
-  expect(r.now).toMatchObject({ created: 2, finished: 2, done: 1, failed: 1, fromOwner: 1, fromRoutines: 1, decisions: 2, byOwner: 1, byJudge: 1 });
+  expect(r.now).toMatchObject({ created: 3, finished: 2, done: 1, failed: 1, fromOwner: 2, fromRoutines: 1, decisions: 2, byOwner: 1, byJudge: 1 });
   expect(r.now.prs.size).toBe(2);
   expect(r.prev.done).toBe(1);
   expect(r.markdown).toContain("| · done | 1 | 1 | ±0% |");

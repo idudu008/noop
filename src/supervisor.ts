@@ -166,6 +166,88 @@ function ciNeedsApproval(ref: string): boolean {
 export const approvalPending = (suites: { status?: string; conclusion?: string | null }[]) =>
   suites.some((x) => x.status === "WAITING" || x.conclusion === "ACTION_REQUIRED");
 
+const taskSpec = (t: Task) => (t.body ?? "").split("\n## Run ")[0];
+const taskTime = (t: Task) => Date.parse(t.meta.created || t.meta.waiting_since || "") || 0;
+
+/** A stable identity for the external human event a task is waiting on. Explicit metadata wins; legacy tasks are
+ * recognized by the artifact their wait_check watches or by a deployment target + checkout pair. */
+export function humanGateKey(t: Task): string | null {
+  const m = t.meta;
+  if (m.wait_kind !== "human" && !m.wait_gate) return null;
+  if (m.wait_gate) return `explicit:${m.wait_gate.trim()}`;
+  const check = (m.wait_check ?? "").replace(/\s+/g, " ").trim();
+  if (!check) return null;
+  const artifact = check.match(/(?:^|[\s'"=])([^\s'";|]+\.(?:receipt|tsv))(?:$|[\s'";|])/i)?.[1];
+  if (artifact) return `artifact:${artifact}`;
+  const target = check.match(/\btarget=([0-9a-f]{7,64})\b/i)?.[1]?.toLowerCase();
+  const checkout = check.match(/\bgit\s+-C\s+([^\s;&|]+)/)?.[1];
+  if (target) return `deployment:${target}:${checkout ?? m.repo ?? ""}`;
+  return `check:${check}`;
+}
+
+/** A downstream task may wait on the same event without being another attempt to perform the gated work. */
+export function isDownstreamHumanWait(t: Task): boolean {
+  if (t.meta.wait_role === "dependency") return true;
+  const spec = taskSpec(t);
+  return /\b(?:only|solely)\s+after\b|\bdepends?\s+on\b|\bafter\s+T-[A-Z0-9-]+\s+(?:finishes|completes)\b|仅在[^。\n]{0,100}(?:完成|确认|结束)后|前置条件(?:是|为)/i.test(spec);
+}
+
+export type Supersession = { gate: string; latest: Task & { path?: string }; old: (Task & { path?: string })[] };
+
+/** Pure selection: keep the newest executor for each human gate; dependency-only tasks remain live. */
+export function humanGateSupersessions(tasks: (Task & { path?: string })[]): Supersession[] {
+  const groups = new Map<string, (Task & { path?: string })[]>();
+  for (const task of tasks) {
+    const gate = humanGateKey(task);
+    if (!gate || isDownstreamHumanWait(task)) continue;
+    groups.set(gate, [...(groups.get(gate) ?? []), task]);
+  }
+  const out: Supersession[] = [];
+  for (const [gate, members] of groups) {
+    if (members.length < 2) continue;
+    members.sort((a, b) => taskTime(a) - taskTime(b) || a.meta.id.localeCompare(b.meta.id));
+    out.push({ gate, latest: members.at(-1)!, old: members.slice(0, -1) });
+  }
+  return out;
+}
+
+/** Archive obsolete projections without claiming their work completed. Delegated parents are rewired to the latest
+ * executor so the dependency chain remains intact and no old task can wake independently later. */
+export function archiveSupersededHumanWaits(tasks: (Task & { path: string })[], host: string, stamp = now()): number {
+  let archived = 0;
+  for (const group of humanGateSupersessions(tasks)) {
+    const explicit = new Set((group.latest.meta.supersedes ?? "").split(",").map((x) => x.trim()).filter(Boolean));
+    const old = group.old.filter((t) => !t.meta.decision || decisionState(t.meta.decision) !== "open" || explicit.has(t.meta.id)) as (Task & { path: string })[];
+    if (!old.length) continue;
+    const ids = old.map((t) => t.meta.id);
+    const reason = `${group.latest.meta.id} is the newest execution task for the same human gate; the archived task remains historical evidence and is not completed.`;
+    for (const task of old) {
+      writeDoc(P("tasks", "done", `${task.meta.id}.md`), {
+        ...task.meta, status: "superseded", superseded_by: group.latest.meta.id, superseded_at: stamp, superseded_reason: reason,
+      }, `${task.body ?? ""}\n\n## Superseded ${stamp}\n${reason}\n`);
+      unlinkSync(task.path);
+      const i = tasks.indexOf(task);
+      if (i >= 0) tasks.splice(i, 1);
+      archived++;
+    }
+    const supersedes = [...new Set([...(group.latest.meta.supersedes ?? "").split(",").filter(Boolean), ...ids])].join(",");
+    group.latest.meta = { ...group.latest.meta, supersedes };
+    writeDoc(group.latest.path!, group.latest.meta,
+      `${group.latest.body ?? ""}\n\n> Supervisor (${stamp}): this is the current execution task for the human gate; archived projections ${ids.join(", ")} remain in tasks/done with status=superseded.\n`);
+
+    for (const parentPath of list(P("tasks", "waiting"), /^T-.*\.md$/)) {
+      if (old.some((t) => t.path === parentPath) || parentPath === group.latest.path) continue;
+      const parent = readDoc(parentPath);
+      const children = (parent.meta.children ?? "").split(",").filter(Boolean);
+      if (!children.some((id) => ids.includes(id))) continue;
+      const replacement = [...new Set(children.map((id) => ids.includes(id) ? group.latest.meta.id : id))];
+      writeDoc(parentPath, { ...parent.meta, children: replacement.join(",") }, parent.body);
+    }
+    journal(host, `🧭 supervisor: ${group.latest.meta.id} supersedes ${ids.join(", ")} for one human gate; old projections archived`);
+  }
+  return archived;
+}
+
 // ------------------------------------------------------------------ IO: one supervisor pass over the hub
 const decisionState = (id: string) => existsSync(P("decisions", "open", `${id}.md`)) ? "open" as const
   : existsSync(P("decisions", "closed", `${id}.md`)) ? "closed" as const : undefined;
@@ -180,7 +262,7 @@ export function supervise(cfg: Cfg, host: string, t = Date.now(), readPrState = 
   const tasks: (Task & { path: string })[] = (["waiting", "blocked"] as const).flatMap((folder) =>
     list(P("tasks", folder), /^T-.*\.md$/).map((path) => ({ path, folder, ...readDoc(path) })));
   const verdicts: Verdict[] = [];
-  const counts = { reroute: 0, resume: 0, requeue: 0, cards: 0, merged: 0 };
+  const counts = { reroute: 0, resume: 0, requeue: 0, cards: 0, merged: 0, superseded: archiveSupersededHumanWaits(tasks, host) };
   let merged = 0;
   for (const task of [...tasks]) { // Wake once per merged PR set, preserving any unfinished acceptance work.
     if (task.meta.children || ctx.decision(task.meta.decision ?? "") === "open") continue;
@@ -251,6 +333,6 @@ export function supervise(cfg: Cfg, host: string, t = Date.now(), readPrState = 
     cards.push({ supervisor_cause: cause, tasks: fresh.join(",") });
   }
   counts.merged = merged;
-  journal(host, `🧭 supervisor ran: resumed ${merged} with merged PRs, ${tasks.length} waiting/blocked, rerouted ${counts.reroute}, resumed ${counts.resume}, requeued ${counts.requeue}, cards ${counts.cards}`);
+  journal(host, `🧭 supervisor ran: resumed ${merged} with merged PRs, ${tasks.length} waiting/blocked, superseded ${counts.superseded}, rerouted ${counts.reroute}, resumed ${counts.resume}, requeued ${counts.requeue}, cards ${counts.cards}`);
   return counts;
 }

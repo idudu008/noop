@@ -32,6 +32,7 @@ export function usageWindow(from: number, to: number): Window {
         else if (/^routine:/.test(m.source ?? "")) w.fromRoutines++;
       }
       if (!FINISHED.has(folder) || !inside(m.finished)) continue;
+      if (m.status === "superseded") continue;
       w.finished++;
       w[folder as "done" | "failed" | "blocked"]++;
       if (m.started && m.finished) w.hours += Math.max(0, Date.parse(m.finished) - Date.parse(m.started)) / 3600e3;
